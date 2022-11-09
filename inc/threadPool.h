@@ -4,6 +4,7 @@
 #include <iostream>
 #include <asio.hpp>
 
+namespace asio_pool {
 
 class ThreadPool {
 public:
@@ -16,19 +17,19 @@ public:
 	~ThreadPool() {
 		join();
 	};
-	
+
 	void join() {
 		pool_->join();
 	};
 
 	template <typename F, typename... Args>
 	auto pushTask(F task, Args... args) {
-		size_t desc = id++;
+		size_t desc = ++id;
 		using type = typename std::result_of<F(Args...)>::type;
 		auto p_task = std::packaged_task<type(void)>(std::bind(task, std::forward<Args...>(args)...));
 		auto future = p_task.get_future();
-		free_tasks_[id] = SyncState();
-		auto wrapped_func = [p = std::move(p_task), d=desc, this]() mutable {
+		tasks_[id] = SyncState();		//todo clean finishing tasks (clear when limit is reached)
+		auto wrapped_func = [p = std::move(p_task), d = desc, this]() mutable {
 			setState(d, State::kRunning);
 			p();
 			setState(d, State::kFinish);
@@ -36,31 +37,67 @@ public:
 		asio::post(*pool_, std::move(wrapped_func));
 		return std::make_pair<size_t, std::future<type>>(std::move(desc), std::move(future));
 	}
-private:
+	
+	struct Stats {
+		size_t waiting;
+		size_t running;
+		size_t finishing;
+	};
+
 	enum class State {
 		kWaiting,
 		kRunning,
 		kFinish
 	};
+
+	Stats computeStatistics() {
+		Stats stats{ 0, 0, 0 };
+		for (auto& [id, sync_state] : tasks_) {
+			switch (getState(id)) {
+			case State::kWaiting:
+				stats.waiting++;
+				break;
+			case State::kRunning:
+				stats.running++;
+				break;
+			case State::kFinish:
+				stats.finishing++;
+				break;
+			default:
+				throw std::runtime_error("Unsupported types");
+				break;
+			}
+		}
+		return stats;
+	}
+
+	State getState(size_t id) {
+		auto& [mtx, state] = tasks_[id];
+		std::lock_guard<std::mutex> lock(*mtx);
+		return state;
+	}
+	
+private:
 	struct SyncState {
 		SyncState() {
 			sync_ = std::make_unique<std::mutex>();
-			State::kWaiting;
+			state_ = State::kWaiting;
 		};
 		std::unique_ptr<std::mutex> sync_;
 		State state_;
 	};
 
 	std::unique_ptr<asio::thread_pool> pool_;
-	std::unordered_map<size_t, SyncState> free_tasks_;
+	std::unordered_map<size_t, SyncState> tasks_;
 	size_t id = 0;
 
 	void setState(size_t id, State new_state) {
-		auto& [mtx, state]= free_tasks_[id];
+		auto& [mtx, state] = tasks_[id];
 		std::lock_guard<std::mutex> lock(*mtx);
 		state = new_state;
 	}
-	
 };
+
+}
 
 #endif // !1

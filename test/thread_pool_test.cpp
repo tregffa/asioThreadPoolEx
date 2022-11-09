@@ -4,6 +4,7 @@
 
 using namespace std::chrono;
 using namespace std::this_thread;
+using namespace asio_pool;
 
 std::atomic_int counter = 0;
 
@@ -49,6 +50,33 @@ TEST_F(ThreadPoolTest, ShouldReturnValue) {
     int value = 10;
     auto [id, result] = pool->pushTask(longTaskChangeValue, value);
     EXPECT_EQ(result.get(), 11);
+}
+
+TEST_F(ThreadPoolTest, ShouldComputeStatistics) {
+    pool = std::make_shared<ThreadPool>(2);
+    pool->pushTask(longTask);
+    pool->pushTask(longTask);
+    pool->pushTask(longTask);
+    sleep_for(milliseconds(2));
+    auto stats = pool->computeStatistics();
+    EXPECT_EQ(stats.waiting, 1);
+    EXPECT_EQ(stats.running, 2);
+    EXPECT_EQ(stats.finishing, 0);
+    sleep_for(milliseconds(10));
+    stats = pool->computeStatistics();
+    EXPECT_EQ(stats.waiting, 0);
+    EXPECT_EQ(stats.running, 1);
+    EXPECT_EQ(stats.finishing, 2);
+}
+
+TEST_F(ThreadPoolTest, ShouldGetTaskState) {
+    pool = std::make_shared<ThreadPool>(2);
+    auto [id, result] = pool->pushTask(longTask);
+    EXPECT_EQ(ThreadPool::State::kWaiting, pool->getState(id));
+    sleep_for(milliseconds(2));
+    EXPECT_EQ(ThreadPool::State::kRunning, pool->getState(id));
+    sleep_for(milliseconds(10));
+    EXPECT_EQ(ThreadPool::State::kFinish, pool->getState(id));
 }
 TEST_F(ThreadPoolTest, ShouldSaveTasksInQueue) {
 }
